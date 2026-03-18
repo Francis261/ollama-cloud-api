@@ -141,6 +141,18 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			writeError(w, http.StatusNotFound, "invalid_request_error", "route not found")
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"service":"ollama-cloud-openai-adapter","status":"ok","routes":["/v1/models","/v1/chat/completions","/v1/completions"]}`))
+	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -148,6 +160,10 @@ func main() {
 	mux.HandleFunc("/v1/models", srv.handleModels)
 	mux.HandleFunc("/v1/chat/completions", srv.handleChatCompletions)
 	mux.HandleFunc("/v1/completions", srv.handleCompletions)
+	// Compatibility aliases for clients that omit /v1.
+	mux.HandleFunc("/models", srv.handleModels)
+	mux.HandleFunc("/chat/completions", srv.handleChatCompletions)
+	mux.HandleFunc("/completions", srv.handleCompletions)
 
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
@@ -287,7 +303,6 @@ func (s *server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 func decodeRequest(r *http.Request) (chatCompletionRequest, error) {
 	var req chatCompletionRequest
 	dec := json.NewDecoder(io.LimitReader(r.Body, defaultReqLimit))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		return req, fmt.Errorf("invalid JSON body: %w", err)
 	}
@@ -472,10 +487,23 @@ func (s *server) streamChatResponse(w http.ResponseWriter, ctx context.Context, 
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			setCORSHeaders(w)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		setCORSHeaders(w)
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s from=%s took=%s", r.Method, r.URL.Path, r.RemoteAddr, time.Since(start))
 	})
+}
+
+func setCORSHeaders(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 }
 
 func classifyErr(err error) (int, string) {
